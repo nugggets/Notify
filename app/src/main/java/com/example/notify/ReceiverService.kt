@@ -36,6 +36,13 @@ class ReceiverService : Service() {
         @Volatile
         var running = false
 
+        /** Открыто ли сейчас соединение с сервером и когда пришёл последний сигнал (время сервера не нужно, берём часы телефона только для показа). */
+        @Volatile
+        var connected = false
+
+        @Volatile
+        var lastEventAt = 0L
+
         fun start(ctx: Context) {
             try {
                 ContextCompat.startForegroundService(ctx, Intent(ctx, ReceiverService::class.java))
@@ -51,19 +58,42 @@ class ReceiverService : Service() {
 
     @Volatile
     private var generation = 0
+    private var everConnected = false
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var cfg: Cfg
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        val cfgLocal = Cfg.get(this)
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                cfgLocal.log("СБОЙ приложения: ${e.javaClass.simpleName}: ${e.message}")
+            } catch (x: Exception) {
+                // ignore
+            }
+            prev?.uncaughtException(t, e)
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         cfg = Cfg.get(this)
         createChannels()
-        val n = ongoing()
-        if (Build.VERSION.SDK_INT >= 34) {
-            ServiceCompat.startForeground(this, NOTIF_RX, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIF_RX, n)
+        try {
+            val n = ongoing()
+            if (Build.VERSION.SDK_INT >= 34) {
+                ServiceCompat.startForeground(this, NOTIF_RX, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(NOTIF_RX, n)
+            }
+        } catch (e: Exception) {
+            // Android 12+ не даёт запускать такую службу из фона (например, при перезапуске системой)
+            cfg.log("Android не дал запустить приём (${e.javaClass.simpleName}). Откройте Notify: приём запустится заново")
+            running = false
+            stopSelf()
+            return START_NOT_STICKY
         }
         running = true
         acquireLock()
@@ -74,6 +104,7 @@ class ReceiverService : Service() {
 
     override fun onDestroy() {
         running = false
+        connected = false
         generation++ // старый поток сам завершится
         try {
             wakeLock?.let { if (it.isHeld) it.release() }
@@ -96,10 +127,15 @@ class ReceiverService : Service() {
         }
     }
 
+    /**
+     * Часы телефона не используются для отбора сообщений: если они уходят вперёд или назад на пару минут,
+     * сообщения иначе молча отбрасывались бы. Возраст сообщения считается по времени сервера (событие open).
+     */
     private fun loop(gen: Int) {
         var lastId = ""
-        val sinceTs = System.currentTimeMillis() / 1000
+        var lastServerTime = 0L
         var backoff = 3_000L
+        var hadError = false
         while (gen == generation) {
             val code = cfg.code
             if (!Link.validCode(code)) {
@@ -111,14 +147,17 @@ class ReceiverService : Service() {
                 continue
             }
             try {
-                val since = if (lastId.isNotEmpty()) lastId else sinceTs.toString()
-                val url = "${cfg.server}/$code/json?since=$since"
-                val req = Request.Builder().url(url).build()
+                // без since сервер присылает только новые сообщения; после обрыва догоняем пропущенное
+                val since = when {
+                    lastId.isNotEmpty() -> "?since=$lastId"
+                    lastServerTime > 0 -> "?since=$lastServerTime"
+                    else -> ""
+                }
+                val req = Request.Builder().url("${cfg.server}/$code/json$since").build()
                 Link.streamClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
-                    if (backoff > 3_000L) cfg.log("Связь восстановлена")
-                    backoff = 3_000L
+                    if (!resp.isSuccessful) throw RuntimeException("сервер ответил ${resp.code}")
                     val src = resp.body?.source() ?: throw RuntimeException("пустой ответ")
+                    var openTime = 0L
                     while (gen == generation) {
                         val line = src.readUtf8Line() ?: break
                         if (line.isBlank()) continue
@@ -127,16 +166,37 @@ class ReceiverService : Service() {
                         } catch (e: Exception) {
                             continue
                         }
-                        if (j.optString("event") != "message") continue
-                        lastId = j.optString("id", lastId)
-                        val time = j.optLong("time", 0L)
-                        val now = System.currentTimeMillis() / 1000
-                        if (time > 0 && now - time > MAX_AGE_SEC) continue // старое сообщение после переподключения
-                        handle(j.optString("message").trim(), j.optString("title"))
+                        lastEventAt = System.currentTimeMillis()
+                        val t = j.optLong("time", 0L)
+                        if (t > 0) lastServerTime = t
+                        when (j.optString("event")) {
+                            "open" -> {
+                                openTime = t
+                                connected = true
+                                backoff = 3_000L
+                                if (hadError || lastId.isEmpty() && openTime > 0 && !everConnected) {
+                                    cfg.log("Подключено к серверу ${cfg.server}")
+                                }
+                                everConnected = true
+                                hadError = false
+                            }
+                            "message" -> {
+                                lastId = j.optString("id", lastId)
+                                if (openTime > 0 && t > 0 && openTime - t > MAX_AGE_SEC) {
+                                    cfg.log("Старое сообщение пропущено")
+                                } else {
+                                    handle(j.optString("message").trim(), j.optString("title"))
+                                }
+                            }
+                            else -> { /* keepalive */ }
+                        }
                     }
                 }
+                connected = false
             } catch (e: Exception) {
+                connected = false
                 if (gen != generation) return
+                hadError = true
                 cfg.log("Нет связи (${e.message ?: e.javaClass.simpleName}), повтор через ${backoff / 1000} с")
             }
             if (gen != generation) return

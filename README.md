@@ -7,7 +7,7 @@
 ## ⚡ Как выпустить версию (читать первым, особенно новому чату)
 
 Проект лежит на телефоне в **Termux** (не Debian) в папке `~/notify`. Это отдельный репозиторий на GitHub (не ProfiMonitor).
-Архив версии лежит в «Загрузках» и называется `Notify-vX_Y.zip` (в имени подчёркивания, например `Notify-v1_0.zip`).
+Архив версии лежит в «Загрузках» и называется `Notify-vX_Y.zip` (в имени подчёркивания, например `Notify-v1_1.zip`).
 
 **Обновление версии.** Одним блоком в Termux, подставьте номер версии вместо `X_Y` и `X.Y`:
 
@@ -22,7 +22,7 @@ cd ~/notify; unzip -o ~/storage/downloads/Notify-vX_Y.zip; grep -c "ReceiverServ
 (без README и .gitignore), затем один блок. Адрес берётся из репозитория ProfiMonitor (`~/profimonitor`), меняется только имя репозитория:
 
 ```
-mkdir -p ~/notify; cd ~/notify; unzip -o ~/storage/downloads/Notify-v1_0.zip; grep -c "ReceiverService" app/src/main/AndroidManifest.xml; git init -b main; git add -A; git commit -m "v1.0"; git remote add origin "$(git -C ~/profimonitor remote get-url origin | sed 's#[^/:]*$#notify.git#')"; git push -u origin main
+mkdir -p ~/notify; cd ~/notify; unzip -o ~/storage/downloads/Notify-v1_1.zip; grep -c "ReceiverService" app/src/main/AndroidManifest.xml; git init -b main; git add -A; git commit -m "v1.1"; git remote add origin "$(git -C ~/profimonitor remote get-url origin | sed 's#[^/:]*$#notify.git#')"; git push -u origin main
 ```
 
 **Правило для ассистента (нового чата):** в каждом ответе, где выдаётся новый архив Notify, в конце обязательно давать этот блок
@@ -51,3 +51,10 @@ mkdir -p ~/notify; cd ~/notify; unzip -o ~/storage/downloads/Notify-v1_0.zip; gr
 
 ## Версия 1.0
 Первая версия: приём ссылок, проверка связи, журнал, подсказки по разрешениям.
+
+## Версия 1.1 (исправление: ссылки не доходили)
+- Часы телефона больше не участвуют в отборе сообщений. Раньше при расхождении часов больше пары минут сообщения молча отбрасывались (в журнале ничего не появлялось). Теперь возраст сообщения считается по времени сервера.
+- На экране видно состояние связи: «Связь с сервером есть (сигнал N с назад)» или «Нет связи с сервером». В журнале есть строка «Подключено к серверу».
+- Если Android остановил приём, при открытии Notify он запускается заново. Если система не дала запустить службу из фона, причина пишется в журнал.
+- Сбои приложения записываются в журнал строкой «СБОЙ приложения».
+- Кнопка «Настройки приложения»: там на Xiaomi и подобных телефонах нужно включить автозапуск и «Всплывающие окна в фоне».

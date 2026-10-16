@@ -112,7 +112,7 @@ class MainActivity : Activity() {
             thread {
                 val err = Link.sendTest(cfg)
                 runOnUiThread {
-                    toast(err ?: "Отправлено. Через пару секунд должен открыться Chrome")
+                    toast(err ?: "Отправлено. Если приём работает, в журнале появится «Получено», а Chrome откроется")
                 }
             }
         }
@@ -123,6 +123,9 @@ class MainActivity : Activity() {
         }
         button("Не ограничивать батарею") {
             startSafe(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        }
+        button("Настройки приложения (автозапуск, всплывающие окна)") {
+            startSafe(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         }
         button("Показ на весь экран (Android 14+)") {
             if (Build.VERSION.SDK_INT >= 34) {
@@ -148,6 +151,11 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // система могла остановить приём: при открытии приложения запускаем заново
+        if (cfg.enabled && Link.validCode(cfg.code) && !ReceiverService.running) {
+            cfg.log("Приём был остановлен системой, запускаю заново")
+            ReceiverService.start(this)
+        }
         ui.post(tick)
     }
 
@@ -196,6 +204,13 @@ class MainActivity : Activity() {
         val notifOk = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         val sb = StringBuilder()
         sb.append(if (ReceiverService.running) "✅ Приём работает" else "⏹ Приём остановлен").append("\n")
+        if (ReceiverService.running) {
+            val ago = (System.currentTimeMillis() - ReceiverService.lastEventAt) / 1000
+            sb.append(
+                if (ReceiverService.connected) "✅ Связь с сервером есть (сигнал $ago с назад)"
+                else "⚠️ Нет связи с сервером"
+            ).append("\n")
+        }
         sb.append(if (Settings.canDrawOverlays(this)) "✅" else "⚠️").append(" Поверх других приложений\n")
         sb.append(if (pm.isIgnoringBatteryOptimizations(packageName)) "✅" else "⚠️").append(" Батарея не ограничена\n")
         sb.append(if (notifOk) "✅" else "⚠️").append(" Уведомления разрешены")
